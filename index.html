@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>💰 Bill Splitter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+      /* slider visuals */
+      input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        background: #e5e7eb;
+        border-radius: 9999px;
+        outline: none;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #3b82f6;
+        cursor: pointer;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+      }
+      input[type="range"]::-moz-range-thumb {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #3b82f6;
+        cursor: pointer;
+      }
+
+      /* prevent small layout jumps by reserving text width */
+      .percent-slot { display:inline-block; width:56px; text-align:right; }
+      .share-slot { display:inline-block; width:120px; text-align:right; margin-left:8px; }
+    </style>
+  </head>
+
+  <body class="bg-gray-100 p-6 font-sans">
+    <div id="app" class="max-w-2xl mx-auto"></div>
+
+    <script>
+      /* ---------- State ---------- */
+      let bill = 100;                // committed value
+      let billInput = String(bill);  // string while typing
+      let people = [
+        { name: "Person 1", percent: 50 },
+        { name: "Person 2", percent: 50 },
+      ];
+
+      /* ---------- DOM refs ---------- */
+      let appEl;
+      let billInputEl;
+      let peopleContainer;
+      let peopleElems = []; // { container, percentEl, sliderEl, shareEl, nameEl }
+
+      /* ---------- rAF batch ---------- */
+      let rafId = null;
+      function scheduleUIUpdate() {
+        if (rafId !== null) return;
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          updatePeopleUI();
+        });
+      }
+
+      /* ---------- UI update (in-place) ---------- */
+      function updatePeopleUI() {
+        // Parse number from typed string without changing the input element
+        const currentBill = Number(billInput) || 0;
+
+        // FOCUS FIX: Check if the user is currently typing in the bill input.
+        // We do this to avoid programmatically updating the sliders while typing,
+        // which can cause the browser to steal focus from the text input.
+        const isBillInputActive = document.activeElement === billInputEl;
+
+        for (let i = 0; i < people.length; i++) {
+          const p = people[i];
+          const el = peopleElems[i];
+          if (!el) continue;
+
+          // Update percent text (always safe)
+          el.percentEl.textContent = p.percent.toFixed(1) + "%";
+
+          // Update share amount text (always safe)
+          el.shareEl.textContent = "₹" + ((currentBill * p.percent) / 100).toFixed(2);
+          
+          // Only update the slider's visual position if the user is NOT actively
+          // typing in the bill input AND not dragging the slider itself.
+          const isThisSliderActive = document.activeElement === el.sliderEl;
+          if (!isBillInputActive && !isThisSliderActive) {
+            el.sliderEl.value = String(Math.round(p.percent));
+          }
+        }
+      }
+
+      /* ---------- create person element ---------- */
+      function createPersonElement(i, person) {
+        const container = document.createElement("div");
+        container.className = "p-4 mb-3 bg-gray-50 rounded-lg border";
+
+        const header = document.createElement("div");
+        header.className = "flex justify-between items-center mb-2";
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "font-semibold";
+        nameEl.textContent = person.name;
+
+        const percentEl = document.createElement("span");
+        percentEl.className = "percent-slot";
+
+        header.appendChild(nameEl);
+        header.appendChild(percentEl);
+
+        const sliderEl = document.createElement("input");
+        sliderEl.type = "range";
+        sliderEl.min = "0";
+        sliderEl.max = "100";
+        sliderEl.step = "1";
+        sliderEl.className = "w-full";
+
+        sliderEl.addEventListener("input", (ev) => {
+          adjustPercent(i, Number(ev.target.value));
+        });
+
+        const shareP = document.createElement("p");
+        shareP.className = "text-sm text-gray-600 mt-2";
+        const shareLabel = document.createElement("span");
+        shareLabel.textContent = "Share:";
+        const shareEl = document.createElement("span");
+        shareEl.className = "share-slot font-semibold";
+
+        shareP.appendChild(shareLabel);
+        shareP.appendChild(shareEl);
+
+        container.appendChild(header);
+        container.appendChild(sliderEl);
+        container.appendChild(shareP);
+
+        return { container, percentEl, sliderEl, shareEl, nameEl };
+      }
+
+      /* ---------- core: adjust percent & normalize (FIXED LOGIC) ---------- */
+      function adjustPercent(index, value) {
+        // Clamp value between 0 and 100
+        const clampedValue = Math.max(0, Math.min(100, value));
+        
+        const peopleCount = people.length;
+        if (peopleCount <= 1) {
+            people[0].percent = 100;
+            scheduleUIUpdate();
+            return;
+        }
+
+        const updated = people.map(p => ({ ...p }));
+        updated[index].percent = clampedValue;
+        
+        const remainingPercent = 100 - clampedValue;
+
+        // Calculate the total percentage of OTHERS from the *original* state
+        let sumOfOthers = 0;
+        for(let i = 0; i < peopleCount; i++) {
+            if (i !== index) {
+                sumOfOthers += people[i].percent;
+            }
+        }
+
+        // LOGIC FIX: Check if others' sum was 0. This happens after one person was set to 100%.
+        // If so, we must distribute the remainder equally. Otherwise, distribute proportionally.
+        if (sumOfOthers < 1e-5) {
+            // Distribute the remaining percentage equally among the others
+            const othersCount = peopleCount - 1;
+            const shareForOthers = remainingPercent / othersCount;
+            for (let i = 0; i < peopleCount; i++) {
+                if (i !== index) {
+                    updated[i].percent = shareForOthers;
+                }
+            }
+        } else {
+            // Distribute the remaining percentage proportionally among others
+            const scale = remainingPercent / sumOfOthers;
+            for (let i = 0; i < peopleCount; i++) {
+                if (i !== index) {
+                    updated[i].percent = people[i].percent * scale;
+                }
+            }
+        }
+        
+        // Final sanity check for floating point errors to ensure total is exactly 100
+        let finalSum = updated.reduce((sum, p) => sum + p.percent, 0);
+        const diff = 100 - finalSum;
+        if (Math.abs(diff) > 1e-7) {
+            // Add any tiny difference to the person being changed to ensure stability
+            updated[index].percent += diff;
+        }
+
+        people = updated;
+        scheduleUIUpdate();
+      }
+
+      /* ---------- add person ---------- */
+      function addPerson() {
+        const newPerson = { name: `Person ${people.length + 1}`, percent: 0 };
+        people.push(newPerson);
+        
+        // Re-distribute percentages equally
+        const equalShare = 100 / people.length;
+        people.forEach(p => p.percent = equalShare);
+
+        // Re-render the people list
+        peopleContainer.innerHTML = '';
+        peopleElems = [];
+        people.forEach((p, i) => {
+          const el = createPersonElement(i, p);
+          peopleElems.push(el);
+          peopleContainer.appendChild(el.container);
+        });
+
+        scheduleUIUpdate();
+      }
+
+      /* ---------- initialization - create DOM once ---------- */
+      function init() {
+        appEl = document.getElementById("app");
+        appEl.innerHTML = "";
+
+        const card = document.createElement("div");
+        card.className = "p-4 shadow-lg rounded-2xl border bg-white";
+
+        const title = document.createElement("h1");
+        title.className = "text-2xl font-bold mb-4";
+        title.textContent = "💰 Bill Splitter";
+
+        const billBlock = document.createElement("div");
+        billBlock.className = "mb-4";
+
+        const billLabel = document.createElement("label");
+        billLabel.className = "block text-sm font-medium";
+        billLabel.htmlFor = "billInput";
+        billLabel.textContent = "Total Bill (₹)";
+
+        billInputEl = document.createElement("input");
+        billInputEl.id = "billInput";
+        billInputEl.type = "text";
+        billInputEl.inputMode = "decimal";
+        billInputEl.className = "mt-2 p-2 border rounded w-full";
+        billInputEl.value = billInput;
+        
+        billInputEl.addEventListener("input", (e) => {
+          billInput = e.target.value;
+          scheduleUIUpdate();
+        });
+
+        billInputEl.addEventListener("blur", () => {
+          const parsedBill = parseFloat(billInput);
+          bill = isNaN(parsedBill) ? 0 : parsedBill;
+          billInput = String(bill); // Sync input string with committed number
+          billInputEl.value = billInput; // Update input visually on blur
+          scheduleUIUpdate();
+        });
+        billInputEl.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            billInputEl.blur();
+          }
+        });
+
+        billBlock.appendChild(billLabel);
+        billBlock.appendChild(billInputEl);
+
+        peopleContainer = document.createElement("div");
+
+        const addBtn = document.createElement("button");
+        addBtn.className = "mt-4 w-full bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 transition-colors";
+        addBtn.textContent = "➕ Add Person";
+        addBtn.addEventListener("click", addPerson);
+
+        card.appendChild(title);
+        card.appendChild(billBlock);
+        card.appendChild(peopleContainer);
+        card.appendChild(addBtn);
+        appEl.appendChild(card);
+
+        // Create initial person elements
+        people.forEach((p, i) => {
+          const el = createPersonElement(i, p);
+          peopleElems.push(el);
+          peopleContainer.appendChild(el.container);
+        });
+
+        updatePeopleUI();
+      }
+
+      // Start the application
+      init();
+    </script>
+  </body>
+</html>
